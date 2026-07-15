@@ -74,9 +74,11 @@ python inference_streaming_web.py \
     --seed 42 \
     --pretrained_model_path Matrix-Game-2.0 \
     --host 127.0.0.1 \
-    --port 8080
+    --port 8080 \
+    --stream_fps 12 \
+    --jpeg_quality 85
 ```
-Then expose the chosen port with your HTTP tunnel, for example Cloudflare Tunnel. The web controller keeps the original CLI streaming path available and adds a remote-friendly action source for generation chunks. Do not run the braces from documentation examples literally; values such as `{your-config}` are placeholders and will fail path validation. The first generated chunk can take several minutes because model compilation/autotuning happens before the first video is written; the page shows active key/mouse state while you wait, and those inputs are applied to the next generated chunk.
+Then expose the chosen port with your HTTP tunnel, for example Cloudflare Tunnel. The web controller keeps the original CLI streaming path available and adds a remote-friendly action source for generation chunks. Do not run the braces from documentation examples literally; values such as `{your-config}` are placeholders and will fail path validation. The first generated chunk can take several minutes because model compilation/autotuning happens before the first frames are available; the page shows active key/mouse state while you wait, and those inputs are applied to the next generated chunk. The browser view uses Socket.IO JPEG frame streaming to avoid repeatedly reloading short MP4 chunks.
 
 ### Tips
 - In the current version, upward movement for camera may cause brief rendering glitches (e.g., black screens). A fix is planned for future updates. Adjust movement slightly or change direction to resolve it.

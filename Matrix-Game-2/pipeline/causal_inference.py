@@ -480,6 +480,7 @@ class CausalInferenceStreamingPipeline(torch.nn.Module):
         action_provider = None,
         should_continue = None,
         progress_callback = None,
+        frame_callback = None,
     ) -> torch.Tensor:
         """
         Perform inference on the given noise and text prompts.
@@ -667,6 +668,8 @@ class CausalInferenceStreamingPipeline(torch.nn.Module):
                     conditional_dict["keyboard_cond"][0, : 1 + 4 * (current_start_frame + self.num_frame_per_block-1)].float().cpu().numpy()
                 )
             current_output_path = output_folder+f'/{name}_current.mp4'
+            if frame_callback is not None:
+                frame_callback(video.astype(np.uint8), current_start_frame, num_blocks)
             process_video(video.astype(np.uint8), current_output_path, config, mouse_icon, mouse_scale=0.1, process_icon=False, mode=mode)
             current_start_frame += current_num_frames
             if progress_callback is not None:

@@ -91,7 +91,7 @@ class InteractiveGameInference:
         image = image.crop((left, top, right, bottom))
         return image
     
-    def generate_videos(self, mode='universal', img_path=None, action_provider=None, should_continue=None, progress_callback=None):
+    def generate_videos(self, mode='universal', img_path=None, action_provider=None, should_continue=None, progress_callback=None, frame_callback=None):
         assert mode in ['universal', 'gta_drive', 'templerun']
         
         while True:
@@ -149,6 +149,7 @@ class InteractiveGameInference:
                 action_provider=action_provider,
                 should_continue=should_continue,
                 progress_callback=progress_callback,
+                frame_callback=frame_callback,
             )
         
 def main():

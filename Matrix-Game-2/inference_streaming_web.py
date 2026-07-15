@@ -1,7 +1,12 @@
 import argparse
+import base64
 import os
+import queue
 import threading
+import time
 from pathlib import Path
+
+import cv2
 
 from flask import Flask, jsonify, render_template_string, request, send_file, send_from_directory
 from flask_socketio import SocketIO
@@ -25,7 +30,8 @@ HTML = """
     input { width: min(720px, 100%); background: #111318; color: #f5f5f5; }
     button { cursor: pointer; background: #2b6df6; color: white; }
     button.stop { background: #c43b3b; }
-    video, img.preview { width: 100%; background: #050505; border-radius: 12px; }
+    canvas, img.preview { width: 100%; background: #050505; border-radius: 12px; }
+    canvas { display: none; }
     img.preview { object-fit: contain; max-height: 420px; }
     kbd { background: #30333d; padding: 2px 6px; border-radius: 4px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -39,9 +45,9 @@ HTML = """
 <main>
   <h1>Matrix-Game 2.0 Web Controller</h1>
   <div class="panel">
-    <p class="hint">Initial image / latest generated chunk:</p>
+    <p class="hint">Initial image / live generated frames:</p>
     <img id="preview" class="preview" alt="initial image preview">
-    <video id="video" controls autoplay muted loop playsinline></video>
+    <canvas id="frameCanvas"></canvas>
   </div>
   <div class="panel">
     <p>Use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> for movement and <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> for camera. Mouse drag on the page also sends camera deltas.</p>
@@ -59,7 +65,8 @@ HTML = """
 <script>
 const socket = io();
 const statusEl = document.getElementById('status');
-const videoEl = document.getElementById('video');
+const canvasEl = document.getElementById('frameCanvas');
+const canvasCtx = canvasEl.getContext('2d');
 const previewEl = document.getElementById('preview');
 const imgPathEl = document.getElementById('imgPath');
 const actionStateEl = document.getElementById('actionState');
@@ -98,8 +105,7 @@ window.addEventListener('mousemove', (event) => {
 
 document.getElementById('startBtn').onclick = async () => {
   imgPathEl.blur();
-  videoEl.removeAttribute('src');
-  videoEl.load();
+  canvasEl.style.display = 'none';
   previewEl.style.display = 'block';
   previewEl.src = '/preview?path=' + encodeURIComponent(imgPathEl.value) + '&t=' + Date.now();
   setStatus('Starting...');
@@ -120,11 +126,18 @@ document.getElementById('stopBtn').onclick = async () => {
 
 socket.on('status', (data) => setStatus(data.message));
 socket.on('action_state', (data) => setActionState(data));
-socket.on('video', (data) => {
-  previewEl.style.display = 'none';
-  videoEl.src = data.url + '?t=' + Date.now();
-  videoEl.load();
-  videoEl.play();
+socket.on('frame', (data) => {
+  const image = new Image();
+  image.onload = () => {
+    if (canvasEl.width !== image.width || canvasEl.height !== image.height) {
+      canvasEl.width = image.width;
+      canvasEl.height = image.height;
+    }
+    previewEl.style.display = 'none';
+    canvasEl.style.display = 'block';
+    canvasCtx.drawImage(image, 0, 0);
+  };
+  image.src = 'data:image/jpeg;base64,' + data.jpeg;
 });
 </script>
 </body>
@@ -142,6 +155,8 @@ def parse_args():
     parser.add_argument("--pretrained_model_path", type=str, default="Matrix-Game-2.0")
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--stream_fps", type=float, default=12.0)
+    parser.add_argument("--jpeg_quality", type=int, default=85)
     return parser.parse_args()
 
 
@@ -156,6 +171,8 @@ class MatrixGameWebApp:
         self.worker = None
         self.stop_event = threading.Event()
         self.current_video_url = None
+        self.frame_queue = None
+        self.frame_streamer = None
         self._lock = threading.Lock()
         self._setup_routes()
         self._setup_socketio()
@@ -194,6 +211,9 @@ class MatrixGameWebApp:
                     return jsonify({"ok": False, "message": "Generation is already running"}), 409
                 self.stop_event.clear()
                 self.action_provider.clear()
+                self.frame_queue = queue.Queue(maxsize=240)
+                self.frame_streamer = threading.Thread(target=self._stream_frames, daemon=True)
+                self.frame_streamer.start()
                 self.worker = threading.Thread(target=self._run_generation, args=(img_path,), daemon=True)
                 self.worker.start()
             return jsonify({"ok": True, "message": f"Started: {img_path}"})
@@ -249,17 +269,53 @@ class MatrixGameWebApp:
                 action_provider=self.action_provider,
                 should_continue=lambda: not self.stop_event.is_set(),
                 progress_callback=self._on_progress,
+                frame_callback=self._on_frames,
             )
             self._emit_status("Generation finished")
         except Exception as exc:
             self._emit_status(f"Generation failed: {exc}")
         finally:
             self.stop_event.set()
+            self._stop_frame_stream()
+
+    def _on_frames(self, frames, current_start_frame, num_blocks):
+        if self.frame_queue is None:
+            return
+        for frame in frames:
+            try:
+                self.frame_queue.put_nowait(frame)
+            except queue.Full:
+                self.frame_queue.get_nowait()
+                self.frame_queue.put_nowait(frame)
+
+    def _stop_frame_stream(self):
+        if self.frame_queue is None:
+            return
+        try:
+            self.frame_queue.put_nowait(None)
+        except queue.Full:
+            self.frame_queue.get_nowait()
+            self.frame_queue.put_nowait(None)
+
+    def _stream_frames(self):
+        interval = 1.0 / max(self.args.stream_fps, 0.1)
+        while True:
+            frame = self.frame_queue.get()
+            if frame is None:
+                break
+            success, encoded = cv2.imencode(
+                ".jpg",
+                cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
+                [int(cv2.IMWRITE_JPEG_QUALITY), int(self.args.jpeg_quality)],
+            )
+            if success:
+                jpeg = base64.b64encode(encoded).decode("ascii")
+                self.socketio.emit("frame", {"jpeg": jpeg})
+            time.sleep(interval)
 
     def _on_progress(self, output_path, current_start_frame, num_blocks):
         filename = Path(output_path).name
         self.current_video_url = f"/outputs/{filename}"
-        self.socketio.emit("video", {"url": self.current_video_url})
         self._emit_status(f"Generated through latent frame {current_start_frame}; total blocks: {num_blocks}")
 
     def _emit_status(self, message):
