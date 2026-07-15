@@ -3,7 +3,7 @@ import os
 import threading
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template_string, request, send_from_directory
+from flask import Flask, jsonify, render_template_string, request, send_file, send_from_directory
 from flask_socketio import SocketIO
 from inference_streaming import InteractiveGameInference
 from utils.action_provider import SocketIOActionProvider
@@ -25,10 +25,14 @@ HTML = """
     input { width: min(720px, 100%); background: #111318; color: #f5f5f5; }
     button { cursor: pointer; background: #2b6df6; color: white; }
     button.stop { background: #c43b3b; }
-    video { width: 100%; background: #050505; border-radius: 12px; }
+    video, img.preview { width: 100%; background: #050505; border-radius: 12px; }
+    img.preview { object-fit: contain; max-height: 420px; }
     kbd { background: #30333d; padding: 2px 6px; border-radius: 4px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .hint { color: #adb3c2; line-height: 1.5; }
+    .active { color: #78d98b; font-weight: 700; }
     #status { color: #9fd39f; }
+    #actionState { margin-top: 12px; }
   </style>
 </head>
 <body>
@@ -36,14 +40,18 @@ HTML = """
   <h1>Matrix-Game 2.0 Web Controller</h1>
   <div class="panel">
     <p>Use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> for movement and <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> for camera. Mouse drag on the page also sends camera deltas.</p>
+    <p class="hint">Important: the first run may spend several minutes compiling/autotuning before the first video appears. Key and mouse inputs are queued for the next generated chunk, so this page shows what the server has received.</p>
     <div class="row">
       <input id="imgPath" value="demo_images/universal/0000.png" placeholder="Image path on the server">
       <button id="startBtn">Start</button>
       <button id="stopBtn" class="stop">Stop</button>
     </div>
     <p id="status">Idle</p>
+    <div id="actionState" class="hint">Active keys: none | mouse delta: 0, 0</div>
   </div>
   <div class="panel">
+    <p class="hint">Initial image / latest generated chunk:</p>
+    <img id="preview" class="preview" alt="initial image preview">
     <video id="video" controls autoplay muted loop playsinline></video>
   </div>
 </main>
@@ -52,15 +60,24 @@ HTML = """
 const socket = io();
 const statusEl = document.getElementById('status');
 const videoEl = document.getElementById('video');
+const previewEl = document.getElementById('preview');
 const imgPathEl = document.getElementById('imgPath');
+const actionStateEl = document.getElementById('actionState');
 const activeKeys = new Set();
 
 function setStatus(text) { statusEl.textContent = text; }
 function sendKey(key, pressed) { socket.emit('key', {key, pressed}); }
+function setActionState(data) {
+  const keys = data.keys && data.keys.length ? data.keys.join(' ').toUpperCase() : 'none';
+  const delta = data.mouse_delta || [0, 0];
+  const dx = Number(delta[0] || 0).toFixed(1);
+  const dy = Number(delta[1] || 0).toFixed(1);
+  actionStateEl.innerHTML = `Active keys: <span class="active">${keys}</span> | mouse delta: ${dx}, ${dy}`;
+}
 
 window.addEventListener('keydown', (event) => {
   const key = event.key.toLowerCase();
-  if (!'wasdqijklu zc'.includes(key)) return;
+  if (!['w','a','s','d','q','i','j','k','l','u','z','c'].includes(key)) return;
   event.preventDefault();
   if (!activeKeys.has(key)) {
     activeKeys.add(key);
@@ -80,6 +97,11 @@ window.addEventListener('mousemove', (event) => {
 });
 
 document.getElementById('startBtn').onclick = async () => {
+  imgPathEl.blur();
+  videoEl.removeAttribute('src');
+  videoEl.load();
+  previewEl.style.display = 'block';
+  previewEl.src = '/preview?path=' + encodeURIComponent(imgPathEl.value) + '&t=' + Date.now();
   setStatus('Starting...');
   const res = await fetch('/start', {
     method: 'POST',
@@ -97,7 +119,9 @@ document.getElementById('stopBtn').onclick = async () => {
 };
 
 socket.on('status', (data) => setStatus(data.message));
+socket.on('action_state', (data) => setActionState(data));
 socket.on('video', (data) => {
+  previewEl.style.display = 'none';
   videoEl.src = data.url + '?t=' + Date.now();
   videoEl.load();
   videoEl.play();
@@ -185,6 +209,18 @@ class MatrixGameWebApp:
             running = self.worker is not None and self.worker.is_alive()
             return jsonify({"running": running, "video_url": self.current_video_url})
 
+        @self.app.get("/preview")
+        def preview():
+            img_path = request.args.get("path", "").strip()
+            if not img_path:
+                return jsonify({"ok": False, "message": "path is required"}), 400
+            path = Path(img_path)
+            if path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+                return jsonify({"ok": False, "message": "preview path must be an image file"}), 400
+            if not path.is_file():
+                return jsonify({"ok": False, "message": f"image not found: {img_path}"}), 404
+            return send_file(path)
+
         @self.app.get("/outputs/<path:filename>")
         def outputs(filename):
             return send_from_directory(self.args.output_folder, filename)
@@ -193,10 +229,12 @@ class MatrixGameWebApp:
         @self.socketio.on("key")
         def on_key(data):
             self.action_provider.set_key(data.get("key", ""), bool(data.get("pressed")))
+            self._emit_action_state()
 
         @self.socketio.on("mouse_delta")
         def on_mouse_delta(data):
             self.action_provider.set_mouse_delta(data.get("dx", 0), data.get("dy", 0))
+            self._emit_action_state()
 
     def _run_generation(self, img_path):
         self._emit_status("Loading models..." if self.pipeline is None else "Starting generation...")
@@ -227,6 +265,9 @@ class MatrixGameWebApp:
     def _emit_status(self, message):
         print(message, flush=True)
         self.socketio.emit("status", {"message": message})
+
+    def _emit_action_state(self):
+        self.socketio.emit("action_state", self.action_provider.snapshot())
 
 
 if __name__ == "__main__":

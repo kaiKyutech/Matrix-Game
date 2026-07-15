@@ -39,6 +39,13 @@ class SocketIOActionProvider:
             self._keys.clear()
             self._mouse_delta = [0.0, 0.0]
 
+    def snapshot(self):
+        with self._lock:
+            return {
+                "keys": sorted(self._keys),
+                "mouse_delta": list(self._mouse_delta),
+            }
+
     def get_current_action(self, mode="universal"):
         with self._lock:
             keys = set(self._keys)
