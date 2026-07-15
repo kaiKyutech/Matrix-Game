@@ -137,9 +137,22 @@ class MatrixGameWebApp:
         self._setup_socketio()
 
     def run(self):
+        self._validate_startup_paths()
         set_seed(self.args.seed)
         os.makedirs(self.args.output_folder, exist_ok=True)
         self.socketio.run(self.app, host=self.args.host, port=self.args.port, allow_unsafe_werkzeug=True)
+
+    def _validate_startup_paths(self):
+        missing_paths = []
+        if not Path(self.args.config_path).is_file():
+            missing_paths.append(f"--config_path not found: {self.args.config_path}")
+        if self.args.checkpoint_path and not Path(self.args.checkpoint_path).is_file():
+            missing_paths.append(f"--checkpoint_path not found: {self.args.checkpoint_path}")
+        if not Path(self.args.pretrained_model_path).is_dir():
+            missing_paths.append(f"--pretrained_model_path not found: {self.args.pretrained_model_path}")
+        if missing_paths:
+            message = "Invalid startup path(s):\n" + "\n".join(f"  - {path}" for path in missing_paths)
+            raise FileNotFoundError(message)
 
     def _setup_routes(self):
         @self.app.get("/")
@@ -187,11 +200,11 @@ class MatrixGameWebApp:
 
     def _run_generation(self, img_path):
         self._emit_status("Loading models..." if self.pipeline is None else "Starting generation...")
-        if self.pipeline is None:
-            self.pipeline = InteractiveGameInference(self.args)
-            self.mode = self.pipeline.config.pop('mode')
-        self._emit_status("Generating. Use WASD/IJKL or drag mouse.")
         try:
+            if self.pipeline is None:
+                self.pipeline = InteractiveGameInference(self.args)
+                self.mode = self.pipeline.config.pop('mode')
+            self._emit_status("Generating. Use WASD/IJKL or drag mouse.")
             self.pipeline.generate_videos(
                 self.mode,
                 img_path=img_path,
