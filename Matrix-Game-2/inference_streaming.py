@@ -91,16 +91,18 @@ class InteractiveGameInference:
         image = image.crop((left, top, right, bottom))
         return image
     
-    def generate_videos(self, mode='universal'):
+    def generate_videos(self, mode='universal', img_path=None, action_provider=None, should_continue=None, progress_callback=None):
         assert mode in ['universal', 'gta_drive', 'templerun']
         
         while True:
             try:
-                img_path = input("Please input the image path: ")
+                if img_path is None:
+                    img_path = input("Please input the image path: ")
                 image = load_image(img_path.strip())
                 break
-            except:
-                print(f"Fail to load image from {img_path}!")
+            except Exception as exc:
+                print(f"Fail to load image from {img_path}: {exc}")
+                img_path = None
 
         image = self._resizecrop(image, 352, 640)
         image = self.frame_process(image)[None, :, None, :, :].to(dtype=self.weight_dtype, device=self.device)
@@ -143,7 +145,10 @@ class InteractiveGameInference:
                 return_latents=False,
                 output_folder=self.args.output_folder,
                 name=os.path.basename(img_path),
-                mode=mode
+                mode=mode,
+                action_provider=action_provider,
+                should_continue=should_continue,
+                progress_callback=progress_callback,
             )
         
 def main():
