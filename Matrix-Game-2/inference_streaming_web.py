@@ -39,6 +39,11 @@ HTML = """
 <main>
   <h1>Matrix-Game 2.0 Web Controller</h1>
   <div class="panel">
+    <p class="hint">Initial image / latest generated chunk:</p>
+    <img id="preview" class="preview" alt="initial image preview">
+    <video id="video" controls autoplay muted loop playsinline></video>
+  </div>
+  <div class="panel">
     <p>Use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> for movement and <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> for camera. Mouse drag on the page also sends camera deltas.</p>
     <p class="hint">Important: the first run may spend several minutes compiling/autotuning before the first video appears. Key and mouse inputs are queued for the next generated chunk, so this page shows what the server has received.</p>
     <div class="row">
@@ -48,11 +53,6 @@ HTML = """
     </div>
     <p id="status">Idle</p>
     <div id="actionState" class="hint">Active keys: none | mouse delta: 0, 0</div>
-  </div>
-  <div class="panel">
-    <p class="hint">Initial image / latest generated chunk:</p>
-    <img id="preview" class="preview" alt="initial image preview">
-    <video id="video" controls autoplay muted loop playsinline></video>
   </div>
 </main>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
