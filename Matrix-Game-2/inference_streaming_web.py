@@ -9,6 +9,7 @@ from pathlib import Path
 import cv2
 
 from flask import Flask, jsonify, render_template_string, request, send_file, send_from_directory
+from werkzeug.utils import secure_filename
 from flask_socketio import SocketIO
 from inference_streaming import InteractiveGameInference
 from utils.action_provider import SocketIOActionProvider
@@ -27,7 +28,8 @@ HTML = """
     main { max-width: 1120px; margin: 0 auto; padding: 24px; }
     .panel { background: #1b1d23; border: 1px solid #30333d; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
     input, button { font-size: 16px; padding: 10px; border-radius: 8px; border: 1px solid #40444f; }
-    input { width: min(720px, 100%); background: #111318; color: #f5f5f5; }
+    input[type="text"] { width: min(720px, 100%); background: #111318; color: #f5f5f5; }
+    input[type="file"] { background: #111318; color: #f5f5f5; }
     button { cursor: pointer; background: #2b6df6; color: white; }
     button.stop { background: #c43b3b; }
     canvas, img.preview { width: 100%; background: #050505; border-radius: 12px; }
@@ -53,9 +55,13 @@ HTML = """
     <p>Use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> for movement and <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> for camera. Mouse drag on the page also sends camera deltas.</p>
     <p class="hint">Important: the first run may spend several minutes compiling/autotuning before the first video appears. Key and mouse inputs are queued for the next generated chunk, so this page shows what the server has received.</p>
     <div class="row">
-      <input id="imgPath" value="demo_images/universal/0000.png" placeholder="Image path on the server">
+      <input id="imgPath" type="text" value="demo_images/universal/0000.png" placeholder="Image path on the server">
       <button id="startBtn">Start</button>
       <button id="stopBtn" class="stop">Stop</button>
+    </div>
+    <div class="row">
+      <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp">
+      <button id="uploadBtn">Upload Image</button>
     </div>
     <p id="status">Idle</p>
     <div id="actionState" class="hint">Active keys: none | mouse delta: 0, 0</div>
@@ -69,6 +75,7 @@ const canvasEl = document.getElementById('frameCanvas');
 const canvasCtx = canvasEl.getContext('2d');
 const previewEl = document.getElementById('preview');
 const imgPathEl = document.getElementById('imgPath');
+const imageFileEl = document.getElementById('imageFile');
 const actionStateEl = document.getElementById('actionState');
 const activeKeys = new Set();
 
@@ -102,6 +109,27 @@ window.addEventListener('mousemove', (event) => {
   if (event.buttons !== 1) return;
   socket.emit('mouse_delta', {dx: event.movementX, dy: event.movementY});
 });
+
+document.getElementById('uploadBtn').onclick = async () => {
+  const file = imageFileEl.files[0];
+  if (!file) {
+    setStatus('Choose an image file first.');
+    return;
+  }
+  setStatus('Uploading image...');
+  const formData = new FormData();
+  formData.append('image', file);
+  const res = await fetch('/upload', {method: 'POST', body: formData});
+  const data = await res.json();
+  if (!res.ok) {
+    setStatus(data.message || JSON.stringify(data));
+    return;
+  }
+  imgPathEl.value = data.path;
+  previewEl.style.display = 'block';
+  previewEl.src = '/preview?path=' + encodeURIComponent(data.path) + '&t=' + Date.now();
+  setStatus('Uploaded image: ' + data.path);
+};
 
 document.getElementById('startBtn').onclick = async () => {
   imgPathEl.blur();
@@ -171,6 +199,7 @@ class MatrixGameWebApp:
         self.worker = None
         self.stop_event = threading.Event()
         self.current_video_url = None
+        self.upload_folder = Path("uploads")
         self.frame_queue = None
         self.frame_streamer = None
         self._lock = threading.Lock()
@@ -181,6 +210,7 @@ class MatrixGameWebApp:
         self._validate_startup_paths()
         set_seed(self.args.seed)
         os.makedirs(self.args.output_folder, exist_ok=True)
+        self.upload_folder.mkdir(parents=True, exist_ok=True)
         self.socketio.run(self.app, host=self.args.host, port=self.args.port, allow_unsafe_werkzeug=True)
 
     def _validate_startup_paths(self):
@@ -199,6 +229,23 @@ class MatrixGameWebApp:
         @self.app.get("/")
         def index():
             return render_template_string(HTML)
+
+        @self.app.post("/upload")
+        def upload():
+            uploaded = request.files.get("image")
+            if uploaded is None or uploaded.filename == "":
+                return jsonify({"ok": False, "message": "image file is required"}), 400
+            filename = secure_filename(uploaded.filename)
+            suffix = Path(filename).suffix.lower()
+            if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+                return jsonify({"ok": False, "message": "image must be .jpg, .jpeg, .png, or .webp"}), 400
+            target = self.upload_folder / filename
+            counter = 1
+            while target.exists():
+                target = self.upload_folder / f"{Path(filename).stem}_{counter}{suffix}"
+                counter += 1
+            uploaded.save(target)
+            return jsonify({"ok": True, "path": str(target)})
 
         @self.app.post("/start")
         def start():
