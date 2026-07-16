@@ -63,6 +63,23 @@ python inference_streaming.py \
     --pretrained_model_path {path-to-the-vae-folder}
 ```
 
+
+### Web controller preview
+For remote servers, you can launch a browser-based controller that accepts WASD/IJKL and mouse-drag inputs over Socket.IO. Replace paths with the checkpoint folder you downloaded; for the universal model, a concrete command looks like this:
+```
+python inference_streaming_web.py \
+    --config_path configs/inference_yaml/inference_universal.yaml \
+    --checkpoint_path Matrix-Game-2.0/base_distilled_model/base_distill.safetensors \
+    --output_folder outputs \
+    --seed 42 \
+    --pretrained_model_path Matrix-Game-2.0 \
+    --host 127.0.0.1 \
+    --port 8080 \
+    --stream_fps 12 \
+    --jpeg_quality 85
+```
+Then expose the chosen port with your HTTP tunnel, for example Cloudflare Tunnel. The web controller keeps the original CLI streaming path available and adds a remote-friendly action source for generation chunks. Do not run the braces from documentation examples literally; values such as `{your-config}` are placeholders and will fail path validation. The first generated chunk can take several minutes because model compilation/autotuning happens before the first frames are available; the page shows active key/mouse state while you wait, and those inputs are applied to the next generated chunk. The browser view uses Socket.IO JPEG frame streaming to avoid repeatedly reloading short MP4 chunks. You can either enter a server-side image path or upload a `.jpg`, `.png`, or `.webp` image from the browser UI before pressing Start.
+
 ### Tips
 - In the current version, upward movement for camera may cause brief rendering glitches (e.g., black screens). A fix is planned for future updates. Adjust movement slightly or change direction to resolve it.
 

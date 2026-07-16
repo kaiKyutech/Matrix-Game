@@ -476,7 +476,11 @@ class CausalInferenceStreamingPipeline(torch.nn.Module):
         return_latents: bool = False,
         output_folder = None,
         name = None,
-        mode = 'universal'
+        mode = 'universal',
+        action_provider = None,
+        should_continue = None,
+        progress_callback = None,
+        frame_callback = None,
     ) -> torch.Tensor:
         """
         Perform inference on the given noise and text prompts.
@@ -583,7 +587,10 @@ class CausalInferenceStreamingPipeline(torch.nn.Module):
             noisy_input = noise[
                 :, :, current_start_frame - num_input_frames:current_start_frame + current_num_frames - num_input_frames]
 
-            current_actions = get_current_action(mode=mode)
+            if action_provider is None:
+                current_actions = get_current_action(mode=mode)
+            else:
+                current_actions = action_provider.get_current_action(mode=mode)
             new_act, conditional_dict = cond_current(conditional_dict, current_start_frame, self.num_frame_per_block, replace=current_actions, mode=mode)
             # Step 3.1: Spatial denoising loop
 
@@ -660,10 +667,18 @@ class CausalInferenceStreamingPipeline(torch.nn.Module):
                 config = (
                     conditional_dict["keyboard_cond"][0, : 1 + 4 * (current_start_frame + self.num_frame_per_block-1)].float().cpu().numpy()
                 )
-            process_video(video.astype(np.uint8), output_folder+f'/{name}_current.mp4', config, mouse_icon, mouse_scale=0.1, process_icon=False, mode=mode)
+            current_output_path = output_folder+f'/{name}_current.mp4'
+            if frame_callback is not None:
+                frame_callback(video.astype(np.uint8), current_start_frame, num_blocks)
+            process_video(video.astype(np.uint8), current_output_path, config, mouse_icon, mouse_scale=0.1, process_icon=False, mode=mode)
             current_start_frame += current_num_frames
+            if progress_callback is not None:
+                progress_callback(current_output_path, current_start_frame, num_blocks)
 
-            if input("Continue? (Press `n` to break)").strip() == "n":
+            if should_continue is None:
+                if input("Continue? (Press `n` to break)").strip() == "n":
+                    break
+            elif not should_continue():
                 break
                 
         videos_tensor = torch.cat(videos, dim=1)
