@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import cv2
+from PIL import Image, ImageFile, ImageOps, UnidentifiedImageError
 
 from flask import Flask, jsonify, render_template_string, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
@@ -14,6 +15,9 @@ from flask_socketio import SocketIO
 from inference_streaming import InteractiveGameInference
 from utils.action_provider import SocketIOActionProvider
 from utils.misc import set_seed
+
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 HTML = """
@@ -239,12 +243,19 @@ class MatrixGameWebApp:
             suffix = Path(filename).suffix.lower()
             if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
                 return jsonify({"ok": False, "message": "image must be .jpg, .jpeg, .png, or .webp"}), 400
-            target = self.upload_folder / filename
+            target = self.upload_folder / f"{Path(filename).stem}.png"
             counter = 1
             while target.exists():
-                target = self.upload_folder / f"{Path(filename).stem}_{counter}{suffix}"
+                target = self.upload_folder / f"{Path(filename).stem}_{counter}.png"
                 counter += 1
-            uploaded.save(target)
+            try:
+                image = Image.open(uploaded.stream)
+                image = ImageOps.exif_transpose(image)
+                if image.mode not in {"RGB", "RGBA"}:
+                    image = image.convert("RGB")
+                image.save(target, format="PNG")
+            except (OSError, UnidentifiedImageError) as exc:
+                return jsonify({"ok": False, "message": f"failed to decode image: {exc}"}), 400
             return jsonify({"ok": True, "path": str(target)})
 
         @self.app.post("/start")
